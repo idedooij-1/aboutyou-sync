@@ -44,4 +44,59 @@ async function getAllVariants() {
   return variants;
 }
 
-module.exports = { getAllVariants };
+// Fetch all variants from a specific collection (by handle), with SKU, price, and inventory
+async function getCollectionVariants(handle) {
+  const variants = [];
+  let cursor = null;
+
+  do {
+    const query = `
+      query getCollectionVariants($handle: String!, $cursor: String) {
+        collection(handle: $handle) {
+          title
+          products(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              title
+              variants(first: 100) {
+                nodes {
+                  id
+                  sku
+                  price
+                  compareAtPrice
+                  inventoryQuantity
+                  updatedAt
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const res = await client.post('/graphql.json', { query, variables: { handle, cursor } });
+    const collection = res.data.data.collection;
+
+    if (!collection) {
+      console.warn(`[shopify] Collection not found: "${handle}"`);
+      break;
+    }
+
+    for (const product of collection.products.nodes) {
+      for (const variant of product.variants.nodes) {
+        if (variant.sku && variant.sku.trim() !== '') {
+          variants.push({ ...variant, product: { id: product.id, title: product.title } });
+        }
+      }
+    }
+
+    cursor = collection.products.pageInfo.hasNextPage
+      ? collection.products.pageInfo.endCursor
+      : null;
+  } while (cursor);
+
+  return variants;
+}
+
+module.exports = { getAllVariants, getCollectionVariants };
