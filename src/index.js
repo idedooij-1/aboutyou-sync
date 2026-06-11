@@ -86,6 +86,11 @@ app.get('/', (req, res) => {
   </div>
 
   <script>
+    const tokenInput = document.getElementById('token');
+    const saved = localStorage.getItem('sync-token');
+    if (saved) tokenInput.value = saved;
+    tokenInput.addEventListener('input', () => localStorage.setItem('sync-token', tokenInput.value));
+
     async function trigger(path, btn, method = 'POST') {
       const token = document.getElementById('token').value.trim();
       const label = btn.textContent;
