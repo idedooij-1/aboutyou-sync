@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const client = axios.create({
-  baseURL: `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2024-01`,
+  baseURL: `https://${process.env.SHOPIFY_SHOP_DOMAIN}/admin/api/2026-04`,
   headers: {
     'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
     'Content-Type': 'application/json',
@@ -35,6 +35,7 @@ async function getAllVariants() {
     `;
 
     const res = await client.post('/graphql.json', { query, variables: { cursor } });
+    if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
     const page = res.data.data.productVariants;
 
     variants.push(...page.nodes.filter(v => v.sku && v.sku.trim() !== ''));
@@ -76,6 +77,7 @@ async function getCollectionVariants(handle) {
     `;
 
     const res = await client.post('/graphql.json', { query, variables: { handle, cursor } });
+    if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
     const collection = res.data.data.collection;
 
     if (!collection) {
