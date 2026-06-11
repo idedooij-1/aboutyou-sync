@@ -45,15 +45,32 @@ async function getAllVariants() {
   return variants;
 }
 
+// Resolve a collection handle to its GID
+async function getCollectionId(handle) {
+  const query = `
+    query getCollectionId($query: String!) {
+      collections(first: 1, query: $query) {
+        nodes { id title }
+      }
+    }
+  `;
+  const res = await client.post('/graphql.json', { query, variables: { query: `handle:${handle}` } });
+  if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
+  const nodes = res.data.data.collections.nodes;
+  if (!nodes.length) throw new Error(`Collection not found: "${handle}"`);
+  return nodes[0].id;
+}
+
 // Fetch all variants from a specific collection (by handle), with SKU, price, and inventory
 async function getCollectionVariants(handle) {
+  const collectionId = await getCollectionId(handle);
   const variants = [];
   let cursor = null;
 
   do {
     const query = `
-      query getCollectionVariants($handle: String!, $cursor: String) {
-        collection(handle: $handle) {
+      query getCollectionVariants($id: ID!, $cursor: String) {
+        collection(id: $id) {
           title
           products(first: 250, after: $cursor) {
             pageInfo { hasNextPage endCursor }
@@ -76,7 +93,7 @@ async function getCollectionVariants(handle) {
       }
     `;
 
-    const res = await client.post('/graphql.json', { query, variables: { handle, cursor } });
+    const res = await client.post('/graphql.json', { query, variables: { id: collectionId, cursor } });
     if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
     const collection = res.data.data.collection;
 
