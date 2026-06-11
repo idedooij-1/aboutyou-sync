@@ -68,11 +68,6 @@ app.get('/', (req, res) => {
     <p class="subtitle">Manual controls for the Shopify → AboutYou sync service</p>
   </div>
 
-  <div class="card">
-    <label for="token">Sync token</label>
-    <input type="password" id="token" placeholder="Enter x-sync-token…" />
-  </div>
-
   <div class="actions">
     <button class="btn-green" onclick="trigger('/sync/new-products', this)">🆕 List new products</button>
     <button class="btn-accent" onclick="trigger('/list', this, 'GET')">📋 List collection</button>
@@ -86,13 +81,10 @@ app.get('/', (req, res) => {
   </div>
 
   <script>
-    const tokenInput = document.getElementById('token');
-    const saved = localStorage.getItem('sync-token');
-    if (saved) tokenInput.value = saved;
-    tokenInput.addEventListener('input', () => localStorage.setItem('sync-token', tokenInput.value));
+    const SYNC_TOKEN = 'a4df6864706eaa1e7c249483d0173d6f7fef12b6a586d264984bb74abb9eef9d';
 
     async function trigger(path, btn, method = 'POST') {
-      const token = document.getElementById('token').value.trim();
+      const token = SYNC_TOKEN;
       const label = btn.textContent;
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Running…';
