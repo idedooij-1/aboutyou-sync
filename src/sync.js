@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { getCollectionVariants } = require('./shopify');
+const { getCollectionVariants, getProductsForListing } = require('./shopify');
+const { mapProducts } = require('./listing');
 
 const COLLECTION_HANDLE = process.env.ABOUTYOU_COLLECTION_HANDLE || 'aboutyou';
 const STATE_FILE = path.join(__dirname, '..', 'data', 'known-skus.json');
@@ -18,7 +19,7 @@ function saveKnownSkus(skus) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify([...skus]));
 }
-const { updateStock, updatePrices } = require('./aboutyou');
+const { updateStock, updatePrices, listProducts } = require('./aboutyou');
 
 // Country codes to sync prices for (e.g. "DE,AT,NL,BE")
 const COUNTRY_CODES = (process.env.ABOUTYOU_COUNTRY_CODES || 'DE').split(',').map(c => c.trim());
@@ -105,51 +106,70 @@ async function handleProductUpdate(payload) {
   await updatePrices(items);
 }
 
-// Check the AboutYou Shopify collection for new products and list them on AboutYou
+// Fetch the full collection from Shopify and list all new products on AboutYou.
+// "New" means: the product's SKUs have not been seen before (tracked in known-skus.json).
+// For new products: pushes the full listing (name, images, attributes, prices, stock).
+// Existing products are skipped to avoid overwriting manual changes on AboutYou.
 async function checkAndListNewProducts() {
   console.log('[sync] Checking for new products in collection...');
+
+  // Get lightweight variant list to detect new SKUs quickly
   const variants = await getCollectionVariants(COLLECTION_HANDLE);
   const knownSkus = loadKnownSkus();
 
-  const newVariants = variants.filter(v => !knownSkus.has(v.sku));
+  const newSkus = new Set(variants.filter(v => !knownSkus.has(v.sku)).map(v => v.sku));
 
-  // Always persist the current full set (handles removals too)
+  // Persist updated SKU set (handles removals too)
   saveKnownSkus(new Set(variants.map(v => v.sku)));
 
-  if (newVariants.length === 0) {
+  if (newSkus.size === 0) {
     console.log('[sync] No new products found.');
     return { newProducts: [] };
   }
 
-  const newProductTitles = [...new Set(newVariants.map(v => v.product.title))];
-  console.log(`[sync] ${newVariants.length} new variant(s) across ${newProductTitles.length} product(s): ${newProductTitles.join(', ')}`);
+  // Fetch full product data (images, options, description) for the collection
+  const allProducts = await getProductsForListing(COLLECTION_HANDLE);
 
-  // Push stock
-  const stockItems = newVariants.map(v => ({
-    sku: v.sku,
-    quantity: Math.max(0, v.inventoryQuantity || 0),
-    valid_at: v.updatedAt,
-  }));
-  await updateStock(stockItems);
+  // Keep only products that have at least one new SKU
+  const newShopifyProducts = allProducts.filter(p =>
+    p.variants.nodes.some(v => newSkus.has(v.sku))
+  );
 
-  // Push prices
-  const priceItems = [];
-  for (const v of newVariants) {
-    for (const country_code of COUNTRY_CODES) {
-      priceItems.push({
-        sku: v.sku,
-        price: {
-          country_code,
-          retail_price: parseFloat(v.compareAtPrice || v.price),
-          sale_price: v.compareAtPrice ? parseFloat(v.price) : null,
-        },
-      });
-    }
+  const newProductTitles = newShopifyProducts.map(p => p.title);
+  console.log(`[sync] ${newSkus.size} new SKU(s) across ${newProductTitles.length} product(s): ${newProductTitles.join(', ')}`);
+
+  // Map to AboutYou payload and push listing
+  const ayProducts = mapProducts(newShopifyProducts);
+  if (ayProducts.length > 0) {
+    await listProducts(ayProducts);
+    console.log('[sync] Product listing pushed to AboutYou.');
   }
-  await updatePrices(priceItems);
 
-  console.log('[sync] New products listed on AboutYou.');
   return { newProducts: newProductTitles };
 }
 
-module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts };
+// List ALL products in the collection on AboutYou, regardless of known-SKU state.
+// Use this for a full re-sync or initial import.
+async function listAllProducts() {
+  console.log('[sync] Fetching all products for full listing...');
+  const shopifyProducts = await getProductsForListing(COLLECTION_HANDLE);
+
+  if (shopifyProducts.length === 0) {
+    console.log('[sync] No products found in collection.');
+    return { listedProducts: [] };
+  }
+
+  const ayProducts = mapProducts(shopifyProducts);
+  console.log(`[sync] Listing ${ayProducts.length} product(s) on AboutYou...`);
+  await listProducts(ayProducts);
+
+  // Update known SKUs so the incremental check stays in sync
+  const allVariants = await getCollectionVariants(COLLECTION_HANDLE);
+  saveKnownSkus(new Set(allVariants.map(v => v.sku)));
+
+  const titles = ayProducts.map(p => p.name);
+  console.log('[sync] Full listing complete.');
+  return { listedProducts: titles };
+}
+
+module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts };

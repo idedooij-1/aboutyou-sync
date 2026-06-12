@@ -36,4 +36,45 @@ async function updatePrices(items) {
   return results;
 }
 
-module.exports = { updateStock, updatePrices };
+// Upsert product variants on AboutYou.
+// The API accepts up to 100 items per call and processes them asynchronously.
+// Returns an array of batchRequestIds to poll via getProductBatchResults().
+async function listProducts(variantItems) {
+  const results = [];
+
+  for (let i = 0; i < variantItems.length; i += 100) {
+    const batch = variantItems.slice(i, i + 100);
+    const res = await client.post('/products/', { items: batch });
+    results.push(res.data);
+    console.log(`[aboutyou] Listing batch ${Math.floor(i / 100) + 1}: batchRequestId=${res.data.batchRequestId}`);
+  }
+
+  return results;
+}
+
+// Poll the result of an async product batch request.
+async function getProductBatchResults(batchRequestId) {
+  const res = await client.get(`/products/batch-results/${batchRequestId}`);
+  return res.data;
+}
+
+// Search categories by path fragment (e.g. "Sunglasses").
+// Returns items: [{ id, name, path, parent_id, material_composition_type, parent }]
+async function getCategories(query) {
+  const res = await client.get('/categories/', { params: query ? { query } : {} });
+  return res.data.items || [];
+}
+
+// List attribute groups (color, size options) for a given category ID.
+async function getCategoryAttributeGroups(categoryId) {
+  const res = await client.get(`/categories/${categoryId}/attribute-groups`);
+  return res.data.attributes || [];
+}
+
+// List all brands available to this seller.
+async function getBrands() {
+  const res = await client.get('/brands/');
+  return res.data.items || [];
+}
+
+module.exports = { updateStock, updatePrices, listProducts, getProductBatchResults, getCategories, getCategoryAttributeGroups, getBrands };

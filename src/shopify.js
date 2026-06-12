@@ -118,4 +118,61 @@ async function getCollectionVariants(handle) {
   return variants;
 }
 
-module.exports = { getAllVariants, getCollectionVariants };
+// Fetch full product data for listing on AboutYou (title, description, images, variants with options/barcode)
+async function getProductsForListing(handle) {
+  const collectionId = await getCollectionId(handle);
+  const products = [];
+  let cursor = null;
+
+  do {
+    const query = `
+      query getProductsForListing($id: ID!, $cursor: String) {
+        collection(id: $id) {
+          products(first: 50, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              title
+              descriptionHtml
+              vendor
+              productType
+              tags
+              options { name values }
+              images(first: 10) {
+                nodes { url altText }
+              }
+              variants(first: 100) {
+                nodes {
+                  id
+                  sku
+                  barcode
+                  price
+                  compareAtPrice
+                  inventoryQuantity
+                  updatedAt
+                  selectedOptions { name value }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const res = await client.post('/graphql.json', { query, variables: { id: collectionId, cursor } });
+    if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
+    const collection = res.data.data.collection;
+
+    if (!collection) {
+      console.warn(`[shopify] Collection not found: "${handle}"`);
+      break;
+    }
+
+    products.push(...collection.products.nodes);
+    cursor = collection.products.pageInfo.hasNextPage ? collection.products.pageInfo.endCursor : null;
+  } while (cursor);
+
+  return products;
+}
+
+module.exports = { getAllVariants, getCollectionVariants, getProductsForListing };

@@ -2,8 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const cron = require('node-cron');
-const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts } = require('./sync');
+const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts } = require('./sync');
 const { getCollectionVariants } = require('./shopify');
+const { getCategories, getCategoryAttributeGroups, getBrands } = require('./aboutyou');
 const { mountAuthRoutes } = require('./auth');
 
 const app = express();
@@ -70,9 +71,12 @@ app.get('/', (req, res) => {
 
   <div class="actions">
     <button class="btn-green" onclick="trigger('/sync/new-products', this)">🆕 List new products</button>
+    <button class="btn-green" onclick="trigger('/sync/list-all', this)" style="background:#15803d">📤 List ALL products</button>
     <button class="btn-accent" onclick="trigger('/list', this, 'GET')">📋 List collection</button>
     <button class="btn-primary" onclick="trigger('/sync/stock', this)">📦 Sync stock</button>
     <button class="btn-secondary" onclick="trigger('/sync/prices', this)">💶 Sync prices</button>
+    <button class="btn-secondary" onclick="lookupCategories()">🔍 Find category IDs</button>
+    <button class="btn-secondary" onclick="trigger('/config/brands', this, 'GET')">🏷 List brand IDs</button>
   </div>
 
   <div class="output-card" id="output">
@@ -109,6 +113,19 @@ app.get('/', (req, res) => {
         btn.disabled = false;
         btn.innerHTML = label;
       }
+    }
+
+    async function lookupCategories() {
+      const q = prompt('Search category name (e.g. "Sunglasses"):');
+      if (q === null) return;
+      const res = await fetch('/config/categories?q=' + encodeURIComponent(q), {
+        headers: { 'x-sync-token': SYNC_TOKEN }
+      });
+      const data = await res.json();
+      const out = document.getElementById('output');
+      document.getElementById('output-label').textContent = 'GET /config/categories?q=' + q;
+      document.getElementById('output-body').textContent = JSON.stringify(data, null, 2);
+      out.classList.add('visible');
     }
   </script>
 </body>
@@ -189,6 +206,45 @@ app.post('/sync/new-products', authGuard, async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[sync/new-products] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Full listing: push every product in the collection to AboutYou (ignores known-SKU state)
+app.post('/sync/list-all', authGuard, async (req, res) => {
+  try {
+    const result = await listAllProducts();
+    res.json(result);
+  } catch (err) {
+    console.error('[sync/list-all] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Config lookup helpers — returns AY category/brand/attribute IDs for use in .env
+app.get('/config/categories', authGuard, async (req, res) => {
+  try {
+    const items = await getCategories(req.query.q || '');
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/config/category/:id/attributes', authGuard, async (req, res) => {
+  try {
+    const attrs = await getCategoryAttributeGroups(parseInt(req.params.id, 10));
+    res.json(attrs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/config/brands', authGuard, async (req, res) => {
+  try {
+    const items = await getBrands();
+    res.json(items);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
