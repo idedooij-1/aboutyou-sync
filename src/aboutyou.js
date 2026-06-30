@@ -44,9 +44,16 @@ async function listProducts(variantItems) {
 
   for (let i = 0; i < variantItems.length; i += 100) {
     const batch = variantItems.slice(i, i + 100);
-    const res = await client.post('/products/', { items: batch });
-    results.push(res.data);
-    console.log(`[aboutyou] Listing batch ${Math.floor(i / 100) + 1}: batchRequestId=${res.data.batchRequestId}`);
+    try {
+      const res = await client.post('/products/', { items: batch });
+      results.push(res.data);
+      console.log(`[aboutyou] Listing batch ${Math.floor(i / 100) + 1}: batchRequestId=${res.data.batchRequestId}`);
+    } catch (err) {
+      const body = err.response?.data;
+      console.error(`[aboutyou] Batch ${Math.floor(i / 100) + 1} failed ${err.response?.status}: ${JSON.stringify(body)}`);
+      console.error(`[aboutyou] First item payload: ${JSON.stringify(batch[0])}`);
+      throw err;
+    }
   }
 
   return results;
@@ -54,7 +61,14 @@ async function listProducts(variantItems) {
 
 // Poll the result of an async product batch request.
 async function getProductBatchResults(batchRequestId) {
-  const res = await client.get(`/products/batch-results/${batchRequestId}`);
+  const res = await client.get('/results/products', { params: { batch_request_id: batchRequestId } });
+  return res.data;
+}
+
+// List rejected products (async processing failures), optionally filtered by style_key.
+async function getRejectedProducts(styleKey) {
+  const params = styleKey ? { style_key: styleKey } : {};
+  const res = await client.get('/products/rejected', { params });
   return res.data;
 }
 
@@ -66,9 +80,10 @@ async function getCategories(query) {
 }
 
 // List attribute groups (color, size options) for a given category ID.
+// Response is a top-level array of groups, each with { id, name, attributes: [{id, name}] }
 async function getCategoryAttributeGroups(categoryId) {
   const res = await client.get(`/categories/${categoryId}/attribute-groups`);
-  return res.data.attributes || [];
+  return Array.isArray(res.data) ? res.data : [];
 }
 
 // List all brands available to this seller.
@@ -77,4 +92,39 @@ async function getBrands() {
   return res.data.items || [];
 }
 
-module.exports = { updateStock, updatePrices, listProducts, getProductBatchResults, getCategories, getCategoryAttributeGroups, getBrands };
+// Fetch one page of products from AboutYou (page_size default on API side).
+async function getProducts(page = 1) {
+  const res = await client.get('/products/', { params: { page } });
+  return res.data; // { items: [...], pagination: { page, pages, total, ... } }
+}
+
+// Fetch ALL products from AboutYou by paginating through all pages.
+async function getAllProducts() {
+  const all = [];
+  let page = 1;
+  let totalPages = null;
+
+  do {
+    const data = await getProducts(page);
+    all.push(...(data.items || []));
+    totalPages = data.pagination?.pages ?? null;
+    page++;
+  } while (totalPages !== null && page <= totalPages);
+
+  return all;
+}
+
+// Delete a single product variant from AboutYou by SKU.
+async function deleteProduct(sku) {
+  const res = await client.delete(`/products/${encodeURIComponent(sku)}`);
+  return res.data;
+}
+
+// Update the status of products by style_key.
+// status: 'published' (submit for approval), 'draft', or 'inactive'
+async function updateProductStatus(items) {
+  const res = await client.put('/products/status', { items });
+  return res.data;
+}
+
+module.exports = { updateStock, updatePrices, listProducts, getProductBatchResults, getRejectedProducts, getCategories, getCategoryAttributeGroups, getBrands, getProducts, getAllProducts, deleteProduct, updateProductStatus };
