@@ -369,6 +369,82 @@ app.post('/sync/fix-rejected', authGuard, async (req, res) => {
   }
 });
 
+// Relist specific products by numeric Shopify product IDs.
+// Useful when fix-rejected already deleted products but re-listing silently failed.
+// Polls the AY batch result for up to 60s so you can see validation errors.
+// Body: { productIds: [8724604256594, ...] }
+app.post('/sync/relist-products', authGuard, async (req, res) => {
+  try {
+    const { mapProducts } = require('./listing');
+    const { getAyImageUrls } = require('./images');
+    const { getProductsByIds, graphql } = require('./shopify');
+    const { listProducts, getProductBatchResults } = require('./aboutyou');
+
+    const productIds = req.body.productIds || [];
+    if (productIds.length === 0) return res.status(400).json({ error: 'productIds array required' });
+
+    const productGids = productIds.map(id => `gid://shopify/Product/${id}`);
+    console.log(`[relist-products] Fetching ${productGids.length} Shopify product(s)`);
+
+    const shopifyProducts = await getProductsByIds(productGids);
+    if (shopifyProducts.length === 0) {
+      return res.json({ error: 'No products found in Shopify', productGids });
+    }
+    console.log(`[relist-products] Got ${shopifyProducts.length} product(s) from Shopify`);
+
+    for (const product of shopifyProducts) {
+      product._ayImageUrls = await getAyImageUrls(product, graphql);
+      console.log(`[relist-products] "${product.title}": ${product._ayImageUrls.length} image(s)`);
+    }
+
+    const ayItems = mapProducts(shopifyProducts);
+    if (ayItems.length === 0) {
+      const debug = shopifyProducts.map(p => ({
+        title: p.title, vendor: p.vendor, productType: p.productType,
+        images: p._ayImageUrls?.length || 0,
+        variants: p.variants?.nodes?.length || 0,
+      }));
+      return res.json({ message: 'mapProducts produced 0 items — check brand/category/images', debug });
+    }
+    console.log(`[relist-products] Mapped ${ayItems.length} AY item(s), submitting...`);
+
+    const batchResults = await listProducts(ayItems);
+    console.log(`[relist-products] Submitted. Polling batch results...`);
+
+    // Poll each batch for up to 60s
+    const batchDetails = [];
+    for (const br of batchResults) {
+      if (!br || !br.batchRequestId) {
+        batchDetails.push({ error: 'No batchRequestId in response', raw: br });
+        continue;
+      }
+      let pollResult = null;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          pollResult = await getProductBatchResults(br.batchRequestId);
+          console.log(`[relist-products] Batch ${br.batchRequestId} status: ${pollResult.status}`);
+          if (pollResult.status === 'completed' || pollResult.status === 'failed') break;
+        } catch (e) {
+          pollResult = { error: e.message };
+          break;
+        }
+      }
+      batchDetails.push({ batchRequestId: br.batchRequestId, pollResult });
+    }
+
+    res.json({
+      skus: ayItems.map(i => i.sku),
+      firstItemSample: ayItems[0],
+      batchResults,
+      batchDetails,
+    });
+  } catch (err) {
+    console.error('[relist-products] error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message, detail: err.response?.data });
+  }
+});
+
 // Submit all draft products for approval (status → published)
 app.post('/sync/submit-for-approval', authGuard, async (req, res) => {
   try {
