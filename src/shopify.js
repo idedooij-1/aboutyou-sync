@@ -77,6 +77,7 @@ async function getCollectionVariants(handle) {
             nodes {
               id
               title
+              vendor
               variants(first: 100) {
                 nodes {
                   id
@@ -105,7 +106,7 @@ async function getCollectionVariants(handle) {
     for (const product of collection.products.nodes) {
       for (const variant of product.variants.nodes) {
         if (variant.sku && variant.sku.trim() !== '') {
-          variants.push({ ...variant, product: { id: product.id, title: product.title } });
+          variants.push({ ...variant, product: { id: product.id, title: product.title, vendor: product.vendor } });
         }
       }
     }
@@ -138,6 +139,7 @@ async function getProductsForListing(handle) {
               productType
               tags
               options { name values }
+              metafield(namespace: "custom", key: "gender") { value }
               images(first: 10) {
                 nodes { url altText }
               }
@@ -149,6 +151,7 @@ async function getProductsForListing(handle) {
                   price
                   compareAtPrice
                   inventoryQuantity
+                  inventoryItem { measurement { weight { value unit } } }
                   updatedAt
                   selectedOptions { name value }
                 }
@@ -175,4 +178,11 @@ async function getProductsForListing(handle) {
   return products;
 }
 
-module.exports = { getAllVariants, getCollectionVariants, getProductsForListing };
+// Raw GraphQL helper — for use by other modules (e.g. images.js for staged uploads)
+async function graphql(query, variables = {}) {
+  const res = await client.post('/graphql.json', { query, variables });
+  if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
+  return res.data.data;
+}
+
+module.exports = { getAllVariants, getCollectionVariants, getProductsForListing, graphql };

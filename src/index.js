@@ -1,14 +1,19 @@
 require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
+const path = require('path');
 const cron = require('node-cron');
-const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts } = require('./sync');
+const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands } = require('./sync');
 const { getCollectionVariants } = require('./shopify');
-const { getCategories, getCategoryAttributeGroups, getBrands } = require('./aboutyou');
+const { getCategories, getCategoryAttributeGroups, getBrands, getRejectedProducts, getAllProducts, deleteProduct, updateProductStatus } = require('./aboutyou');
 const { mountAuthRoutes } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Serve padded 3:4 images for AboutYou from the persistent data volume.
+// Shopify is never modified — these files exist only on this server.
+app.use('/images', express.static(path.join(__dirname, '..', 'data', 'images')));
 
 // --- Shopify webhook verification ---
 function verifyShopifyWebhook(req) {
@@ -221,6 +226,76 @@ app.post('/sync/list-all', authGuard, async (req, res) => {
   }
 });
 
+// Cleanup: delete AY products whose SKU is not in the Shopify "aboutyou" collection.
+// Dry-run by default; pass ?confirm=true to actually delete.
+app.post('/sync/cleanup', authGuard, async (req, res) => {
+  try {
+    const dryRun = req.query.confirm !== 'true';
+    const handle = process.env.ABOUTYOU_COLLECTION_HANDLE || 'aboutyou';
+
+    // Shopify collection SKUs
+    const variants = await getCollectionVariants(handle);
+    const shopifySkus = new Set(variants.map(v => v.sku).filter(Boolean));
+
+    // All AY listed products
+    console.log('[cleanup] Fetching all AboutYou products...');
+    const ayProducts = await getAllProducts();
+    console.log(`[cleanup] ${ayProducts.length} products on AY, ${shopifySkus.size} SKUs in Shopify collection`);
+
+    const toDelete = ayProducts.filter(p => !shopifySkus.has(p.sku));
+    console.log(`[cleanup] ${toDelete.length} products to delete`);
+
+    const deleted = [];
+    const errors = [];
+
+    if (!dryRun) {
+      for (const p of toDelete) {
+        try {
+          await deleteProduct(p.sku);
+          deleted.push(p.sku);
+          console.log(`[cleanup] Deleted SKU ${p.sku} (${p.name || p.style_key})`);
+        } catch (err) {
+          const msg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+          errors.push({ sku: p.sku, error: msg });
+          console.error(`[cleanup] Failed to delete SKU ${p.sku}: ${msg}`);
+        }
+        // Respect AboutYou rate limit
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+
+    res.json({
+      dryRun,
+      shopifySkuCount: shopifySkus.size,
+      ayProductCount: ayProducts.length,
+      toDeleteCount: toDelete.length,
+      toDelete: toDelete.map(p => ({ sku: p.sku, style_key: p.style_key, name: p.name, status: p.status })),
+      deleted: dryRun ? [] : deleted,
+      errors: dryRun ? [] : errors,
+    });
+  } catch (err) {
+    console.error('[cleanup] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Submit all draft products for approval (status → published)
+app.post('/sync/submit-for-approval', authGuard, async (req, res) => {
+  try {
+    const ayProducts = await getAllProducts();
+    const drafts = ayProducts.filter(p => p.status === 'draft');
+    // Deduplicate by style_key
+    const styleKeys = [...new Set(drafts.map(p => p.style_key).filter(Boolean))];
+    if (styleKeys.length === 0) return res.json({ message: 'No draft products found', submitted: 0 });
+    const items = styleKeys.map(style_key => ({ style_key, status: 'published' }));
+    const result = await updateProductStatus(items);
+    res.json({ submitted: styleKeys.length, styleKeys, result });
+  } catch (err) {
+    console.error('[submit-for-approval] error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 // Config lookup helpers — returns AY category/brand/attribute IDs for use in .env
 app.get('/config/categories', authGuard, async (req, res) => {
   try {
@@ -235,6 +310,25 @@ app.get('/config/category/:id/attributes', authGuard, async (req, res) => {
   try {
     const attrs = await getCategoryAttributeGroups(parseInt(req.params.id, 10));
     res.json(attrs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/config/batch/:id', authGuard, async (req, res) => {
+  try {
+    const { getProductBatchResults } = require('./aboutyou');
+    const result = await getProductBatchResults(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/config/rejected', authGuard, async (req, res) => {
+  try {
+    const result = await getRejectedProducts(req.query.style_key);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -278,22 +372,20 @@ cron.schedule('*/15 * * * *', async () => {
   }
 });
 
-// New product check at 06:00 and 18:00
-cron.schedule('0 6 * * *', async () => {
-  console.log('[cron] Running new products check (06:00)');
+// New product check + brand check every hour
+cron.schedule('0 * * * *', async () => {
+  console.log('[cron] Running hourly new products check');
   try {
     await checkAndListNewProducts();
   } catch (err) {
     console.error('[cron] new products check error:', err.message);
   }
-});
 
-cron.schedule('0 18 * * *', async () => {
-  console.log('[cron] Running new products check (18:00)');
+  console.log('[cron] Running hourly brand check');
   try {
-    await checkAndListNewProducts();
+    await checkNewBrands();
   } catch (err) {
-    console.error('[cron] new products check error:', err.message);
+    console.error('[cron] brand check error:', err.message);
   }
 });
 
@@ -312,5 +404,5 @@ app.listen(PORT, () => {
   console.log(`[server] Listening on port ${PORT}`);
   console.log(`[server] Webhooks: POST /webhooks/inventory-update  POST /webhooks/product-update`);
   console.log(`[server] Manual sync: POST /sync/stock  POST /sync/prices`);
-  console.log(`[server] Scheduled: stock every 15 min, prices every hour, new products at 06:00 & 18:00`);
+  console.log(`[server] Scheduled: stock every 15 min, prices + new products + brand check every hour`);
 });

@@ -37,9 +37,16 @@ const DESC_LANGS = (process.env.ABOUTYOU_DESCRIPTION_LANG || 'de,en').split(',')
 
 // Brand IDs — known from Seller Center > Brands
 const BUILTIN_BRAND_MAP = {
-  'GUESS':      174728,
-  'Jimmy Choo': 176645,
-  'Max Mara':   179312,
+  'GUESS':        174728,
+  'Jimmy Choo':   176645,
+  'Max Mara':     179312,
+  'Fila':         176744,
+  'Police':       175833,
+  'Skechers':     174528,
+  'Emilio Pucci': 178777,
+  'Pucci':        178777, // same brand as Emilio Pucci
+  'Bolle':        2617085,
+  'Bollè':        2617085,
 };
 
 const BRAND_MAP = (() => {
@@ -47,13 +54,47 @@ const BRAND_MAP = (() => {
   catch { return BUILTIN_BRAND_MAP; }
 })();
 
-// Category IDs — set via ABOUTYOU_CATEGORY_MAP env var
-// e.g. '{"Sunglasses":12345}'
-// Use GET /api/v1/categories/?query=Sunglasses to find the correct ID for your account.
+// Category IDs — built-in defaults merged with ABOUTYOU_CATEGORY_MAP env var overrides
+const BUILTIN_CATEGORY_MAP = { 'Sunglasses': 1445 };
 const CATEGORY_MAP = (() => {
-  try { return JSON.parse(process.env.ABOUTYOU_CATEGORY_MAP || '{}'); }
-  catch { return {}; }
+  try { return { ...BUILTIN_CATEGORY_MAP, ...JSON.parse(process.env.ABOUTYOU_CATEGORY_MAP || '{}') }; }
+  catch { return BUILTIN_CATEGORY_MAP; }
 })();
+
+// Gender → category ID override.
+// If a Shopify product has a tag matching a known gender, this takes priority over CATEGORY_MAP.
+// Built-in: women → 1445, men → 1700
+// Override/extend via ABOUTYOU_GENDER_CATEGORY_MAP e.g. '{"men":2000}'
+const BUILTIN_GENDER_CATEGORY_MAP = { women: 1445, men: 1700 };
+const GENDER_CATEGORY_MAP = (() => {
+  try { return { ...BUILTIN_GENDER_CATEGORY_MAP, ...JSON.parse(process.env.ABOUTYOU_GENDER_CATEGORY_MAP || '{}') }; }
+  catch { return BUILTIN_GENDER_CATEGORY_MAP; }
+})();
+
+// Detect gender from Shopify product tags.
+// Recognises: "Women", "women", "gender:women", "gender_women", "female" → "women"
+//             "Men",   "men",   "gender:men",   "gender_men",   "male"   → "men"
+function detectGender(tags = []) {
+  for (const tag of tags) {
+    const t = tag.toLowerCase().replace(/[_:\s-]/g, '');
+    if (t === 'women' || t === 'female' || t === 'genderwomen' || t === 'genderfemale') return 'women';
+    if (t === 'men'   || t === 'male'   || t === 'gendermen'   || t === 'gendermale')   return 'men';
+  }
+  return null;
+}
+
+// Extract gender from product description HTML.
+// Looks for "Gender Men" or "Gender Women" patterns commonly found in eyewear descriptions.
+function extractGenderFromDescription(descriptionHtml) {
+  const text = stripHtml(descriptionHtml);
+  const match = text.match(/Gender\s+(Men|Women|Male|Female)/i);
+  if (match) {
+    const g = match[1].toLowerCase();
+    if (g === 'men' || g === 'male') return 'men';
+    if (g === 'women' || g === 'female') return 'women';
+  }
+  return null;
+}
 
 // Color and size attribute ID maps — set via env vars once you've looked up IDs per category
 const COLOR_MAP = (() => {
@@ -66,16 +107,118 @@ const SIZE_MAP = (() => {
   catch { return {}; }
 })();
 
-const SIZE_OPTION  = process.env.ABOUTYOU_SIZE_OPTION_NAME  || 'Size';
-const COLOR_OPTION = process.env.ABOUTYOU_COLOR_OPTION_NAME || 'Color';
+// Built-in color name → AboutYou attribute ID (category 1445, group id 1381)
+// Covers common sunglass frame colors. Override/extend via ABOUTYOU_COLOR_NAME_MAP env var.
+const BUILTIN_COLOR_NAME_MAP = {
+  'black':       160515,
+  'brown':       160381,
+  'gold':        160413,
+  'grey':        160415,
+  'gray':        160415,
+  'silver':      160518,
+  'beige':       160344,
+  'transparent': 160520,
+  'clear':       160520,
+  'white':       160521,
+  'nude':        160346,
+  'pink':        160476,
+  'rose':        160478,
+  'blue':        160357,
+  'green':       160429,
+  'red':         160510, // neon red — closest generic red
+  'orange':      160471,
+  'yellow':      160407,
+  'purple':      160460,
+  'olive':       160432,
+  'havana':      160381, // tortoise/havana → brown
+  'tortoise':    160381,
+};
+const COLOR_NAME_MAP = (() => {
+  try { return { ...BUILTIN_COLOR_NAME_MAP, ...JSON.parse(process.env.ABOUTYOU_COLOR_NAME_MAP || '{}') }; }
+  catch { return BUILTIN_COLOR_NAME_MAP; }
+})();
+
+// Default color and size for products without Color/Size variant options.
+// Defaults: Black (160515) and Einheitsgröße/one-size (171501) for sunglasses.
+// Override via ABOUTYOU_DEFAULT_COLOR_ID and ABOUTYOU_DEFAULT_SIZE_ID env vars.
+const DEFAULT_COLOR_ID    = parseInt(process.env.ABOUTYOU_DEFAULT_COLOR_ID || '160515', 10); // Black
+const DEFAULT_SIZE_ID     = parseInt(process.env.ABOUTYOU_DEFAULT_SIZE_ID  || '171501', 10); // Einheitsgröße
+
+const SIZE_OPTION         = process.env.ABOUTYOU_SIZE_OPTION_NAME  || 'Size';
+const COLOR_OPTION        = process.env.ABOUTYOU_COLOR_OPTION_NAME || 'Color';
+const COUNTRY_OF_ORIGIN   = process.env.ABOUTYOU_COUNTRY_OF_ORIGIN || 'CN';
+const DEFAULT_WEIGHT_GRAMS = parseInt(process.env.ABOUTYOU_DEFAULT_WEIGHT_GRAMS || '100', 10);
+
+// Try to extract main frame color from Shopify product description HTML.
+// Looks for "Main color <X>" or "Frame color <X>" patterns.
+function extractColorFromDescription(descriptionHtml) {
+  const text = stripHtml(descriptionHtml);
+  const match = text.match(/Main color\s+(\w+)/i) || text.match(/Frame color\s+(\w+)/i);
+  if (match) {
+    const colorName = match[1].toLowerCase();
+    if (COLOR_NAME_MAP[colorName]) return COLOR_NAME_MAP[colorName];
+  }
+  return undefined;
+}
+
+// Frame material detection for required AY attributes.
+// shoe_material_style IDs (group 1716): Synthetik/Gummi=158865, Metall=180685
+// material IDs (group 1396 — for material_composition_non_textile): Kunststoff=158715, Acetat=186647, Metall=186683
+// cluster_id 164742 = "Rahmen" (Frame) from material_group_name group 1948
+const FRAME_MATERIAL_MAP = {
+  'plastic':    { shoeMatId: 158865, materialId: 158715 },
+  'acetate':    { shoeMatId: 158865, materialId: 186647 },
+  'metal':      { shoeMatId: 180685, materialId: 186683 },
+  'stainless':  { shoeMatId: 180685, materialId: 186683 },
+  'titanium':   { shoeMatId: 180685, materialId: 186683 },
+  'aluminum':   { shoeMatId: 180685, materialId: 186683 },
+  'aluminium':  { shoeMatId: 180685, materialId: 186683 },
+  'nylon':      { shoeMatId: 158865, materialId: 158715 },
+};
+const DEFAULT_FRAME_MATERIAL = { shoeMatId: 158865, materialId: 158715 }; // Plastic
+
+function extractFrameMaterial(descriptionHtml) {
+  const text = stripHtml(descriptionHtml);
+  const match = text.match(/Frame material\s+(\w+)/i);
+  if (match) {
+    const mat = match[1].toLowerCase();
+    return FRAME_MATERIAL_MAP[mat] || DEFAULT_FRAME_MATERIAL;
+  }
+  return DEFAULT_FRAME_MATERIAL;
+}
+
+// Pad a 12-digit UPC barcode to 13-digit EAN-13 by prepending "0".
+// Returns the barcode unchanged if it's already 13 digits or not a recognised UPC.
+function normaliseEan(barcode) {
+  if (!barcode) return undefined;
+  const digits = barcode.replace(/\D/g, '');
+  if (digits.length === 12) return '0' + digits;
+  if (digits.length === 13) return digits;
+  return digits.length >= 8 ? digits : undefined; // EAN-8 or unknown — pass through
+}
 
 function resolveBrandId(vendor) {
-  const id = BRAND_MAP[vendor] || parseInt(process.env.ABOUTYOU_DEFAULT_BRAND_ID || '0', 10);
+  // Case-insensitive lookup so "Guess" matches "GUESS" etc.
+  const key = Object.keys(BRAND_MAP).find(k => k.toLowerCase() === (vendor || '').toLowerCase());
+  const id = (key ? BRAND_MAP[key] : 0) || parseInt(process.env.ABOUTYOU_DEFAULT_BRAND_ID || '0', 10);
   if (!id) console.warn(`[listing] No brand ID for vendor "${vendor}". Set ABOUTYOU_BRAND_MAP or ABOUTYOU_DEFAULT_BRAND_ID.`);
   return id || undefined;
 }
 
-function resolveCategoryId(productType) {
+function resolveCategoryId(productType, tags = [], genderMetafield = null, descriptionHtml = '') {
+  // custom.gender metafield takes highest priority (e.g. "Women" → "women")
+  if (genderMetafield) {
+    const g = genderMetafield.toLowerCase().trim();
+    if (GENDER_CATEGORY_MAP[g]) return GENDER_CATEGORY_MAP[g];
+  }
+  // Tag-based detection
+  const genderFromTags = detectGender(tags);
+  if (genderFromTags && GENDER_CATEGORY_MAP[genderFromTags]) return GENDER_CATEGORY_MAP[genderFromTags];
+
+  // Description-based detection (e.g. "Gender Men" in product description)
+  const genderFromDesc = extractGenderFromDescription(descriptionHtml);
+  if (genderFromDesc && GENDER_CATEGORY_MAP[genderFromDesc]) return GENDER_CATEGORY_MAP[genderFromDesc];
+
   const id = CATEGORY_MAP[productType] || parseInt(process.env.ABOUTYOU_DEFAULT_CATEGORY_ID || '0', 10);
   if (!id) console.warn(`[listing] No category ID for product_type "${productType}". Set ABOUTYOU_CATEGORY_MAP or ABOUTYOU_DEFAULT_CATEGORY_ID.`);
   return id || undefined;
@@ -101,20 +244,26 @@ function mapVariantItem(shopifyProduct, variant) {
   const colorOption = selectedOptions.find(o => o.name === COLOR_OPTION);
   const sizeOption  = selectedOptions.find(o => o.name === SIZE_OPTION);
 
-  const colorId = colorOption ? COLOR_MAP[colorOption.value] : undefined;
-  const sizeId  = sizeOption  ? SIZE_MAP[sizeOption.value]   : undefined;
-
+  // Resolve color: option map → description text → default
+  let colorId = colorOption ? COLOR_MAP[colorOption.value] : undefined;
   if (colorOption && !colorId) {
-    console.warn(`[listing] No color ID for "${colorOption.value}". Add to ABOUTYOU_COLOR_MAP.`);
+    console.warn(`[listing] No color ID for option "${colorOption.value}". Add to ABOUTYOU_COLOR_MAP.`);
   }
+  if (!colorId) {
+    colorId = extractColorFromDescription(shopifyProduct.descriptionHtml) || DEFAULT_COLOR_ID;
+  }
+
+  // Resolve size: option map → default (one size for single-variant products)
+  let sizeId = sizeOption ? SIZE_MAP[sizeOption.value] : undefined;
   if (sizeOption && !sizeId) {
-    console.warn(`[listing] No size ID for "${sizeOption.value}". Add to ABOUTYOU_SIZE_MAP.`);
+    console.warn(`[listing] No size ID for option "${sizeOption.value}". Add to ABOUTYOU_SIZE_MAP.`);
   }
+  if (!sizeId) sizeId = DEFAULT_SIZE_ID;
 
   // Prices: retail_price and optional sale_price in cents
   const prices = COUNTRY_CODES.map(country_code => {
-    const retail_price = Math.round(parseFloat(variant.compareAtPrice || variant.price) * 100);
-    const sale_price   = variant.compareAtPrice ? Math.round(parseFloat(variant.price) * 100) : undefined;
+    const retail_price = parseFloat(variant.compareAtPrice || variant.price);
+    const sale_price   = variant.compareAtPrice ? parseFloat(variant.price) : undefined;
     return { country_code, retail_price, ...(sale_price !== undefined ? { sale_price } : {}) };
   });
 
@@ -123,22 +272,48 @@ function mapVariantItem(shopifyProduct, variant) {
   const descriptions = {};
   for (const lang of DESC_LANGS) descriptions[lang] = descText;
 
+  // Weight: prefer Shopify inventoryItem.measurement.weight, fall back to env default (100g)
+  const shopifyWeight = variant.inventoryItem?.measurement?.weight;
+  let weightGrams = 0;
+  if (shopifyWeight && shopifyWeight.value > 0) {
+    const u = (shopifyWeight.unit || '').toUpperCase();
+    if (u === 'KILOGRAMS') weightGrams = Math.round(shopifyWeight.value * 1000);
+    else if (u === 'POUNDS')    weightGrams = Math.round(shopifyWeight.value * 453.592);
+    else if (u === 'OUNCES')    weightGrams = Math.round(shopifyWeight.value * 28.3495);
+    else                        weightGrams = Math.round(shopifyWeight.value); // GRAMS
+  }
+  if (!weightGrams) weightGrams = DEFAULT_WEIGHT_GRAMS;
+
+  // Resolve frame material for required AY category attributes
+  const frameMaterial = extractFrameMaterial(shopifyProduct.descriptionHtml);
+
   const item = {
-    style_key: styleKey(shopifyProduct.id),
-    sku:       variant.sku,
-    name:      shopifyProduct.title,
+    style_key:          styleKey(shopifyProduct.id),
+    sku:                variant.sku,
+    ean:                normaliseEan(variant.barcode),
+    name:               shopifyProduct.title,
     descriptions,
-    brand:     resolveBrandId(shopifyProduct.vendor),
-    category:  resolveCategoryId(shopifyProduct.productType),
-    quantity:  Math.max(0, variant.inventoryQuantity || 0),
-    countries: COUNTRY_CODES,
+    brand:              resolveBrandId(shopifyProduct.vendor),
+    category:           resolveCategoryId(shopifyProduct.productType, shopifyProduct.tags || [], shopifyProduct.metafield?.value || null, shopifyProduct.descriptionHtml || ''),
+    quantity:           Math.max(0, variant.inventoryQuantity || 0),
+    weight:             weightGrams || undefined,
+    country_of_origin:  COUNTRY_OF_ORIGIN,
+    countries:          COUNTRY_CODES,
+    // Required category-specific attribute IDs (integers):
+    //   186833 = quantity_per_pack: 1er Pack
+    //   frameMaterial.shoeMatId = shoe_material_style: Plastic or Metal
+    //   158747 = contains_non_textile_parts_of_animal_origin: nein
+    attributes: [186833, frameMaterial.shoeMatId, 158747],
+    // material_composition_non_textile: cluster 164742 = Rahmen (Frame)
+    material_composition_non_textile: [
+      { cluster_id: 164742, components: [{ material_id: frameMaterial.materialId }] },
+    ],
     prices,
-    images:    (shopifyProduct.images?.nodes || []).map(img => img.url),
+    images:             shopifyProduct._ayImageUrls || (shopifyProduct.images?.nodes || []).map(img => img.url),
   };
 
-  if (variant.barcode) item.ean = variant.barcode;
-  if (colorId)         item.color = colorId;
-  if (sizeId)          item.size  = sizeId;
+  item.color = colorId;
+  item.size  = sizeId;
 
   // Remove undefined top-level fields
   Object.keys(item).forEach(k => item[k] === undefined && delete item[k]);
@@ -159,6 +334,27 @@ function mapProducts(shopifyProducts) {
       console.warn(`[listing] Skipping "${product.title}" — no variants with SKUs`);
       continue;
     }
+
+    // Pre-check required fields — skip entire product if brand or category can't be resolved
+    const brandId    = resolveBrandId(product.vendor);
+    const categoryId = resolveCategoryId(product.productType, product.tags || [], product.metafield?.value || null);
+    if (!brandId) {
+      console.warn(`[listing] Skipping "${product.title}" — no brand ID for vendor "${product.vendor}"`);
+      continue;
+    }
+    if (!categoryId) {
+      console.warn(`[listing] Skipping "${product.title}" — no category ID for product_type "${product.productType}"`);
+      continue;
+    }
+
+    // Skip products with no images — AY requires at least one image per item
+    // _ayImageUrls is pre-populated by sync.js after image processing
+    const imageUrls = product._ayImageUrls || (product.images?.nodes || []).map(img => img.url);
+    if (imageUrls.length === 0) {
+      console.warn(`[listing] Skipping "${product.title}" — no images after processing (AY requires ≥1 image)`);
+      continue;
+    }
+
     for (const variant of variants) {
       items.push(mapVariantItem(product, variant));
     }
@@ -167,4 +363,4 @@ function mapProducts(shopifyProducts) {
   return items;
 }
 
-module.exports = { mapProducts, mapVariantItem, styleKey };
+module.exports = { mapProducts, mapVariantItem, styleKey, BRAND_MAP };

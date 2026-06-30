@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const { getCollectionVariants, getProductsForListing } = require('./shopify');
+const { getCollectionVariants, getProductsForListing, graphql } = require('./shopify');
 const { mapProducts } = require('./listing');
+const { getAyImageUrls } = require('./images');
 
 const COLLECTION_HANDLE = process.env.ABOUTYOU_COLLECTION_HANDLE || 'aboutyou';
 const STATE_FILE = path.join(__dirname, '..', 'data', 'known-skus.json');
@@ -19,7 +20,8 @@ function saveKnownSkus(skus) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify([...skus]));
 }
-const { updateStock, updatePrices, listProducts } = require('./aboutyou');
+const { updateStock, updatePrices, listProducts, getBrands } = require('./aboutyou');
+const { BRAND_MAP } = require('./listing');
 
 // Country codes to sync prices for (e.g. "DE,AT,NL,BE")
 const COUNTRY_CODES = (process.env.ABOUTYOU_COUNTRY_CODES || 'DE').split(',').map(c => c.trim());
@@ -110,19 +112,23 @@ async function handleProductUpdate(payload) {
 // "New" means: the product's SKUs have not been seen before (tracked in known-skus.json).
 // For new products: pushes the full listing (name, images, attributes, prices, stock).
 // Existing products are skipped to avoid overwriting manual changes on AboutYou.
+//
+// Important: only successfully mapped SKUs are added to known-skus.json.
+// Products skipped due to a missing brand ID or image are left "unknown" so they are
+// automatically retried on the next run (e.g. after a brand gets approved on AboutYou).
 async function checkAndListNewProducts() {
   console.log('[sync] Checking for new products in collection...');
 
   // Get lightweight variant list to detect new SKUs quickly
   const variants = await getCollectionVariants(COLLECTION_HANDLE);
   const knownSkus = loadKnownSkus();
+  const allCurrentSkus = new Set(variants.map(v => v.sku));
 
   const newSkus = new Set(variants.filter(v => !knownSkus.has(v.sku)).map(v => v.sku));
 
-  // Persist updated SKU set (handles removals too)
-  saveKnownSkus(new Set(variants.map(v => v.sku)));
-
   if (newSkus.size === 0) {
+    // Prune SKUs that were removed from the collection
+    saveKnownSkus(new Set([...knownSkus].filter(s => allCurrentSkus.has(s))));
     console.log('[sync] No new products found.');
     return { newProducts: [] };
   }
@@ -135,17 +141,35 @@ async function checkAndListNewProducts() {
     p.variants.nodes.some(v => newSkus.has(v.sku))
   );
 
-  const newProductTitles = newShopifyProducts.map(p => p.title);
-  console.log(`[sync] ${newSkus.size} new SKU(s) across ${newProductTitles.length} product(s): ${newProductTitles.join(', ')}`);
+  console.log(`[sync] ${newSkus.size} new SKU(s) across ${newShopifyProducts.length} product(s): ${newShopifyProducts.map(p => p.title).join(', ')}`);
 
-  // Map to AboutYou payload and push listing
+  // Process images to meet AY spec (3:4 portrait ≥1125×1500)
+  for (const product of newShopifyProducts) {
+    product._ayImageUrls = await getAyImageUrls(product, graphql);
+  }
+
+  // Map to AboutYou payload — products without a brand ID or image are skipped here
   const ayProducts = mapProducts(newShopifyProducts);
+
+  // Only mark SKUs that were actually mapped as known; skipped ones stay unknown for retry
+  const mappedSkus = new Set(ayProducts.map(item => item.sku));
+  const skippedCount = newSkus.size - mappedSkus.size;
+  if (skippedCount > 0) {
+    console.log(`[sync] ${skippedCount} SKU(s) skipped (missing brand ID or image) — will retry next run`);
+  }
+
   if (ayProducts.length > 0) {
     await listProducts(ayProducts);
     console.log('[sync] Product listing pushed to AboutYou.');
   }
 
-  return { newProducts: newProductTitles };
+  // Save: previously known SKUs still in collection + newly successfully mapped SKUs
+  saveKnownSkus(new Set([
+    ...[...knownSkus].filter(s => allCurrentSkus.has(s)),
+    ...mappedSkus,
+  ]));
+
+  return { newProducts: newShopifyProducts.map(p => p.title) };
 }
 
 // List ALL products in the collection on AboutYou, regardless of known-SKU state.
@@ -159,17 +183,76 @@ async function listAllProducts() {
     return { listedProducts: [] };
   }
 
+  // Process images to meet AY spec (3:4 portrait ≥1125×1500)
+  console.log('[sync] Processing images...');
+  for (const product of shopifyProducts) {
+    product._ayImageUrls = await getAyImageUrls(product, graphql);
+  }
+
   const ayProducts = mapProducts(shopifyProducts);
   console.log(`[sync] Listing ${ayProducts.length} product(s) on AboutYou...`);
-  await listProducts(ayProducts);
+  const batchResults = await listProducts(ayProducts);
 
-  // Update known SKUs so the incremental check stays in sync
+  // Only mark successfully mapped SKUs as known so skipped ones are retried next incremental run
+  const mappedSkus = new Set(ayProducts.map(item => item.sku));
+  const knownSkus = loadKnownSkus();
   const allVariants = await getCollectionVariants(COLLECTION_HANDLE);
-  saveKnownSkus(new Set(allVariants.map(v => v.sku)));
+  const allCurrentSkus = new Set(allVariants.map(v => v.sku));
+  saveKnownSkus(new Set([
+    ...[...knownSkus].filter(s => allCurrentSkus.has(s)),
+    ...mappedSkus,
+  ]));
 
   const titles = ayProducts.map(p => p.name);
   console.log('[sync] Full listing complete.');
-  return { listedProducts: titles };
+  return { listedProducts: titles, batchResults };
 }
 
-module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts };
+// Check AboutYou API for newly approved brands that match vendors in the Shopify collection.
+// Logs actionable matches — brands that are approved on AY but not yet in BRAND_MAP.
+async function checkNewBrands() {
+  console.log('[sync] Checking for newly approved brands on AboutYou...');
+
+  const [ayBrands, variants] = await Promise.all([
+    getBrands(),
+    getCollectionVariants(COLLECTION_HANDLE),
+  ]);
+
+  // Unique vendor names currently in the collection
+  const vendorsInCollection = new Set(
+    variants.map(v => v.product?.vendor).filter(Boolean)
+  );
+
+  // Vendors already mapped (case-insensitive)
+  const knownVendors = new Set(Object.keys(BRAND_MAP).map(k => k.toLowerCase()));
+
+  const newMatches = [];
+  for (const brand of ayBrands) {
+    if (!brand.id || !brand.name) continue;
+    if (knownVendors.has(brand.name.toLowerCase())) continue; // already mapped
+
+    const matchingVendor = [...vendorsInCollection].find(
+      v => v.toLowerCase() === brand.name.toLowerCase()
+    );
+    if (!matchingVendor) continue;
+
+    const variantCount = variants.filter(
+      v => v.product?.vendor?.toLowerCase() === brand.name.toLowerCase()
+    ).length;
+
+    newMatches.push({ brand: brand.name, id: brand.id, vendor: matchingVendor, variantCount });
+  }
+
+  if (newMatches.length > 0) {
+    console.log(`[sync] NEW BRANDS APPROVED ON ABOUTYOU (add to BUILTIN_BRAND_MAP in listing.js):`);
+    for (const m of newMatches) {
+      console.log(`  '${m.vendor}': ${m.id},  // ${m.variantCount} variant(s) in collection`);
+    }
+  } else {
+    console.log('[sync] No new approved brands matching collection products.');
+  }
+
+  return newMatches;
+}
+
+module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands };
