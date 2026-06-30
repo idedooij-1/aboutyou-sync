@@ -411,7 +411,7 @@ app.post('/sync/relist-products', authGuard, async (req, res) => {
     const batchResults = await listProducts(ayItems);
     console.log(`[relist-products] Submitted. Polling batch results...`);
 
-    // Poll each batch for up to 60s
+    // Poll each batch for up to 20s (4 × 5s)
     const batchDetails = [];
     for (const br of batchResults) {
       if (!br || !br.batchRequestId) {
@@ -419,7 +419,7 @@ app.post('/sync/relist-products', authGuard, async (req, res) => {
         continue;
       }
       let pollResult = null;
-      for (let attempt = 0; attempt < 12; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         await new Promise(r => setTimeout(r, 5000));
         try {
           pollResult = await getProductBatchResults(br.batchRequestId);
