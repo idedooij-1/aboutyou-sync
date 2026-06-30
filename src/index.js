@@ -586,6 +586,21 @@ app.get('/config/brands', authGuard, async (req, res) => {
   }
 });
 
+// Raw AY brands response for debugging
+app.get('/config/brands/raw', authGuard, async (req, res) => {
+  try {
+    const axios = require('axios');
+    const client = axios.create({
+      baseURL: 'https://partner.aboutyou.com/api/v1',
+      headers: { 'X-API-Key': process.env.ABOUTYOU_API_KEY, 'Content-Type': 'application/json' },
+    });
+    const r = await client.get('/brands/');
+    res.json({ status: r.status, dataType: typeof r.data, isArray: Array.isArray(r.data), data: r.data });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 app.post('/sync/stock', authGuard, async (req, res) => {
   res.json({ message: 'Stock sync started' });
   try {
