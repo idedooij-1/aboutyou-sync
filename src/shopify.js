@@ -178,6 +178,49 @@ async function getProductsForListing(handle) {
   return products;
 }
 
+// Fetch specific products by their Shopify GIDs (for targeted re-listing)
+async function getProductsByIds(productGids) {
+  if (!productGids || productGids.length === 0) return [];
+
+  const query = `
+    query getProductsByIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          title
+          descriptionHtml
+          vendor
+          productType
+          tags
+          options { name values }
+          metafield(namespace: "custom", key: "gender") { value }
+          images(first: 10) {
+            nodes { url altText }
+          }
+          variants(first: 100) {
+            nodes {
+              id
+              sku
+              barcode
+              price
+              compareAtPrice
+              inventoryQuantity
+              inventoryItem { measurement { weight { value unit } } }
+              updatedAt
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const res = await client.post('/graphql.json', { query, variables: { ids: productGids } });
+  if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
+  // Filter out nulls (non-Product nodes) and return the products
+  return (res.data.data.nodes || []).filter(n => n && n.id);
+}
+
 // Raw GraphQL helper — for use by other modules (e.g. images.js for staged uploads)
 async function graphql(query, variables = {}) {
   const res = await client.post('/graphql.json', { query, variables });
@@ -185,4 +228,4 @@ async function graphql(query, variables = {}) {
   return res.data.data;
 }
 
-module.exports = { getAllVariants, getCollectionVariants, getProductsForListing, graphql };
+module.exports = { getAllVariants, getCollectionVariants, getProductsForListing, getProductsByIds, graphql };

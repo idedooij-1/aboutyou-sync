@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const cron = require('node-cron');
 const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands } = require('./sync');
-const { getCollectionVariants } = require('./shopify');
+const { getCollectionVariants, getProductsByIds } = require('./shopify');
 const { getCategories, getCategoryAttributeGroups, getBrands, getRejectedProducts, getAllProducts, deleteProduct, updateProductStatus } = require('./aboutyou');
 const { mountAuthRoutes } = require('./auth');
 
@@ -276,6 +276,93 @@ app.post('/sync/cleanup', authGuard, async (req, res) => {
   } catch (err) {
     console.error('[cleanup] error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete all rejected products from AY, then re-list only those from Shopify.
+// Removes their SKUs from known-skus.json so the next "new products" check will re-list them.
+app.post('/sync/fix-rejected', authGuard, async (req, res) => {
+  try {
+    const { mapProducts } = require('./listing');
+    const { getAyImageUrls } = require('./images');
+    const { graphql } = require('./shopify');
+    const fs = require('fs');
+    const path = require('path');
+    const STATE_FILE = path.join(__dirname, '..', 'data', 'known-skus.json');
+
+    // 1. Get all rejected products
+    const rejected = await getRejectedProducts();
+    const rejectedItems = rejected.items || [];
+    if (rejectedItems.length === 0) return res.json({ message: 'No rejected products found', deleted: [], relisted: [] });
+
+    console.log(`[fix-rejected] Found ${rejectedItems.length} rejected item(s)`);
+
+    // 2. Delete each rejected SKU from AY and remove from known-skus.json
+    const deleted = [];
+    const deleteErrors = [];
+    const skusToRemove = new Set(rejectedItems.map(i => i.sku).filter(Boolean));
+
+    for (const item of rejectedItems) {
+      if (!item.sku) continue;
+      try {
+        await deleteProduct(item.sku);
+        deleted.push(item.sku);
+        console.log(`[fix-rejected] Deleted SKU ${item.sku} (style_key=${item.style_key})`);
+      } catch (err) {
+        deleteErrors.push({ sku: item.sku, error: err.response?.data || err.message });
+        console.error(`[fix-rejected] Failed to delete SKU ${item.sku}:`, err.response?.data || err.message);
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // Remove from known-skus.json so "new products" check re-lists them
+    try {
+      const knownSkus = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      const updated = knownSkus.filter(s => !skusToRemove.has(s));
+      fs.writeFileSync(STATE_FILE, JSON.stringify(updated));
+      console.log(`[fix-rejected] Removed ${knownSkus.length - updated.length} SKU(s) from known-skus.json`);
+    } catch { /* first run, file may not exist */ }
+
+    // 3. Extract unique Shopify product GIDs from style_keys (e.g. "shopify-123" → "gid://shopify/Product/123")
+    const styleKeys = [...new Set(rejectedItems.map(i => i.style_key).filter(Boolean))];
+    const productGids = styleKeys
+      .map(sk => { const m = sk.match(/^shopify-(\d+)$/); return m ? `gid://shopify/Product/${m[1]}` : null; })
+      .filter(Boolean);
+
+    console.log(`[fix-rejected] Re-listing ${productGids.length} Shopify product(s): ${productGids.join(', ')}`);
+
+    // 4. Fetch those products from Shopify
+    const shopifyProducts = await getProductsByIds(productGids);
+    if (shopifyProducts.length === 0) {
+      return res.json({ message: 'Deleted from AY but could not find products in Shopify', deleted, deleteErrors, relisted: [] });
+    }
+
+    // 5. Process images
+    for (const product of shopifyProducts) {
+      product._ayImageUrls = await getAyImageUrls(product, graphql);
+    }
+
+    // 6. Map and re-list
+    const ayItems = mapProducts(shopifyProducts);
+    if (ayItems.length === 0) {
+      return res.json({ message: 'Deleted from AY but no mappable variants found', deleted, deleteErrors, relisted: [] });
+    }
+
+    const batchResults = await (require('./aboutyou').listProducts)(ayItems);
+    const relisted = ayItems.map(i => i.sku);
+
+    // Update known-skus.json with the newly listed SKUs
+    try {
+      const knownSkus = new Set(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
+      relisted.forEach(s => knownSkus.add(s));
+      fs.writeFileSync(STATE_FILE, JSON.stringify([...knownSkus]));
+    } catch { fs.writeFileSync(STATE_FILE, JSON.stringify(relisted)); }
+
+    console.log(`[fix-rejected] Re-listed ${relisted.length} SKU(s)`);
+    res.json({ deleted, deleteErrors, relisted, batchResults });
+  } catch (err) {
+    console.error('[fix-rejected] error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
   }
 });
 
