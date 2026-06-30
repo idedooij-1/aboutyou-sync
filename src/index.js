@@ -369,6 +369,83 @@ app.post('/sync/fix-rejected', authGuard, async (req, res) => {
   }
 });
 
+// List all Shopify collection products that are NOT currently on AboutYou.
+// Compares against actual AY product list (not local known-skus.json state).
+// Products with unmapped brands or no images are skipped and reported.
+app.post('/sync/list-missing', authGuard, async (req, res) => {
+  try {
+    const { mapProducts } = require('./listing');
+    const { getAyImageUrls } = require('./images');
+    const { graphql, getProductsForListing } = require('./shopify');
+    const { listProducts, getAllProducts } = require('./aboutyou');
+    const fs = require('fs');
+    const path = require('path');
+    const STATE_FILE = path.join(__dirname, '..', 'data', 'known-skus.json');
+    const handle = process.env.ABOUTYOU_COLLECTION_HANDLE || 'aboutyou';
+
+    // 1. Get all SKUs currently on AY
+    console.log('[list-missing] Fetching current AY products...');
+    const ayProducts = await getAllProducts();
+    const aySkus = new Set(ayProducts.map(p => p.sku).filter(Boolean));
+    console.log(`[list-missing] ${aySkus.size} SKUs currently on AY`);
+
+    // 2. Get all products from Shopify collection
+    console.log('[list-missing] Fetching Shopify collection...');
+    const shopifyProducts = await getProductsForListing(handle);
+    console.log(`[list-missing] ${shopifyProducts.length} products in Shopify collection`);
+
+    // 3. Filter to products with at least one SKU not on AY
+    const missing = shopifyProducts.filter(p =>
+      (p.variants?.nodes || []).some(v => v.sku && !aySkus.has(v.sku))
+    );
+    console.log(`[list-missing] ${missing.length} products have SKUs not on AY`);
+
+    if (missing.length === 0) {
+      return res.json({ message: 'All collection products are already on AY', aySkuCount: aySkus.size });
+    }
+
+    // 4. Process images
+    for (const product of missing) {
+      product._ayImageUrls = await getAyImageUrls(product, graphql);
+    }
+
+    // 5. Map — products with no brand/category/images are skipped
+    const ayItems = mapProducts(missing);
+    const skipped = missing.filter(p =>
+      !(p.variants?.nodes || []).some(v => ayItems.find(i => i.sku === v.sku))
+    );
+
+    if (ayItems.length === 0) {
+      return res.json({
+        message: 'No products could be mapped (missing brand IDs or images)',
+        skipped: skipped.map(p => ({ title: p.title, vendor: p.vendor })),
+      });
+    }
+
+    // 6. List on AY
+    console.log(`[list-missing] Listing ${ayItems.length} item(s) on AY...`);
+    const batchResults = await listProducts(ayItems);
+
+    // 7. Update known-skus.json
+    try {
+      const knownSkus = new Set(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
+      ayItems.forEach(i => knownSkus.add(i.sku));
+      fs.writeFileSync(STATE_FILE, JSON.stringify([...knownSkus]));
+    } catch { fs.writeFileSync(STATE_FILE, JSON.stringify(ayItems.map(i => i.sku))); }
+
+    res.json({
+      listed: ayItems.map(i => ({ sku: i.sku, name: i.name, brand: i.brand })),
+      listedCount: ayItems.length,
+      skipped: skipped.map(p => ({ title: p.title, vendor: p.vendor })),
+      skippedCount: skipped.length,
+      batchResults,
+    });
+  } catch (err) {
+    console.error('[list-missing] error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 // Relist specific products by numeric Shopify product IDs.
 // Useful when fix-rejected already deleted products but re-listing silently failed.
 // Polls the AY batch result for up to 60s so you can see validation errors.
