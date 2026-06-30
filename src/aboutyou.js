@@ -87,9 +87,10 @@ async function getCategoryAttributeGroups(categoryId) {
 }
 
 // List all brands available to this seller.
+// AY returns a direct array (not {items:[...]}).
 async function getBrands() {
   const res = await client.get('/brands/');
-  return res.data.items || [];
+  return Array.isArray(res.data) ? res.data : (res.data.items || []);
 }
 
 // Fetch one page of products from AboutYou (page_size default on API side).

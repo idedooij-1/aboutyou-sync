@@ -35,18 +35,29 @@
 const COUNTRY_CODES = (process.env.ABOUTYOU_COUNTRY_CODES || 'DE').split(',').map(c => c.trim());
 const DESC_LANGS = (process.env.ABOUTYOU_DESCRIPTION_LANG || 'de,en').split(',').map(l => l.trim());
 
-// Brand IDs — known from Seller Center > Brands
+// Brand IDs — known from Seller Center > Brands (GET /brands/ returns direct array)
 const BUILTIN_BRAND_MAP = {
-  'GUESS':        174728,
-  'Jimmy Choo':   176645,
-  'Max Mara':     179312,
-  'Fila':         176744,
-  'Police':       175833,
-  'Skechers':     174528,
-  'Emilio Pucci': 178777,
-  'Pucci':        178777, // same brand as Emilio Pucci
-  'Bolle':        2617085,
-  'Bollè':        2617085,
+  'GUESS':            174728,
+  'Guess':            174728,
+  'Jimmy Choo':       176645,
+  'Max Mara':         179312,
+  'Fila':             176744,
+  'Police':           175833,
+  'Skechers':         174528,
+  'Emilio Pucci':     178777,
+  'Pucci':            178777, // same brand as Emilio Pucci
+  'Bolle':            2617085,
+  'Bollè':            2617085,
+  // Newly approved brands (from AY /brands/ API 2026-06-30)
+  'Timberland':       174266,
+  'Tommy Hilfiger':   174564,
+  'Ted Baker':        184336,
+  'Tom Ford':         184370,
+  'Victoria Beckham': 184430,
+  'Marc Jacobs':      179290,
+  'Tods':             3141709,
+  "Tod's":            3141709,
+  'Superdry':         4391023,
 };
 
 const BRAND_MAP = (() => {
