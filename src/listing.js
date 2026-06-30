@@ -326,7 +326,7 @@ function mapVariantItem(shopifyProduct, variant) {
     attributes: [186833, frameMaterial.shoeMatId, 158747],
     // material_composition_non_textile: cluster 164742 = Rahmen (Frame)
     material_composition_non_textile: [
-      { cluster_id: 164742, components: [{ material_id: frameMaterial.materialId }] },
+      { cluster_id: 164742, components: [{ material_id: frameMaterial.materialId, percentage: 100 }] },
     ],
     prices,
     images:             shopifyProduct._ayImageUrls || (shopifyProduct.images?.nodes || []).map(img => img.url),
