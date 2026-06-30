@@ -140,6 +140,13 @@ const BUILTIN_COLOR_NAME_MAP = {
   'copper':       160398,
   'cognac':       160386,
   'camel':        160347,
+  'turquoise':    160360, // türkis
+  'turquois':     160360,
+  'teal':         160360,
+  'petrol':       160433,
+  'aqua':         160368,
+  'mint':         160435,
+  'cyan':         160372,
 };
 const COLOR_NAME_MAP = (() => {
   try { return { ...BUILTIN_COLOR_NAME_MAP, ...JSON.parse(process.env.ABOUTYOU_COLOR_NAME_MAP || '{}') }; }
