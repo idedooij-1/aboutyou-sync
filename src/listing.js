@@ -110,28 +110,36 @@ const SIZE_MAP = (() => {
 // Built-in color name → AboutYou attribute ID (category 1445, group id 1381)
 // Covers common sunglass frame colors. Override/extend via ABOUTYOU_COLOR_NAME_MAP env var.
 const BUILTIN_COLOR_NAME_MAP = {
-  'black':       160515,
-  'brown':       160381,
-  'gold':        160413,
-  'grey':        160415,
-  'gray':        160415,
-  'silver':      160518,
-  'beige':       160344,
-  'transparent': 160520,
-  'clear':       160520,
-  'white':       160521,
-  'nude':        160346,
-  'pink':        160476,
-  'rose':        160478,
-  'blue':        160357,
-  'green':       160429,
-  'red':         160510, // neon red — closest generic red
-  'orange':      160471,
-  'yellow':      160407,
-  'purple':      160460,
-  'olive':       160432,
-  'havana':      160381, // tortoise/havana → brown
-  'tortoise':    160381,
+  'black':        160515,
+  'brown':        160381,
+  'gold':         160413,
+  'grey':         160415,
+  'gray':         160415,
+  'silver':       160518,
+  'beige':        160344,
+  'transparent':  160520,
+  'clear':        160520,
+  'white':        160521,
+  'nude':         160346,
+  'pink':         160476,
+  'rose':         160478,
+  'blue':         160357,
+  'green':        160429,
+  'red':          160510, // neon red — closest generic red
+  'orange':       160471,
+  'yellow':       160407,
+  'purple':       160460,
+  'olive':        160432,
+  'havana':       160381, // tortoise/havana → brown
+  'tortoise':     160381,
+  'multicolor':   160463, // mischfarben / Mixed colours
+  'multicolour':  160463,
+  'multi':        160463,
+  'mixed':        160463,
+  'bronze':       160397,
+  'copper':       160398,
+  'cognac':       160386,
+  'camel':        160347,
 };
 const COLOR_NAME_MAP = (() => {
   try { return { ...BUILTIN_COLOR_NAME_MAP, ...JSON.parse(process.env.ABOUTYOU_COLOR_NAME_MAP || '{}') }; }
@@ -149,13 +157,23 @@ const COLOR_OPTION        = process.env.ABOUTYOU_COLOR_OPTION_NAME || 'Color';
 const COUNTRY_OF_ORIGIN   = process.env.ABOUTYOU_COUNTRY_OF_ORIGIN || 'CN';
 const DEFAULT_WEIGHT_GRAMS = parseInt(process.env.ABOUTYOU_DEFAULT_WEIGHT_GRAMS || '100', 10);
 
-// Try to extract main frame color from Shopify product description HTML.
-// Looks for "Main color <X>" or "Frame color <X>" patterns.
+// Extract "Main color" from Shopify product description HTML and map to AY attribute ID.
+// "Main color" is the primary color field for eyewear; "Frame color" is a fallback.
 function extractColorFromDescription(descriptionHtml) {
   const text = stripHtml(descriptionHtml);
-  const match = text.match(/Main color\s+(\w+)/i) || text.match(/Frame color\s+(\w+)/i);
-  if (match) {
-    const colorName = match[1].toLowerCase();
+  // Prefer "Main color" — may be multi-word (e.g. "Main color Multicolor")
+  const mainMatch = text.match(/Main colou?r\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i);
+  if (mainMatch) {
+    // Try the full two-word phrase first, then the first word alone
+    const full = mainMatch[1].trim().toLowerCase();
+    const first = full.split(/\s+/)[0];
+    if (COLOR_NAME_MAP[full])  return COLOR_NAME_MAP[full];
+    if (COLOR_NAME_MAP[first]) return COLOR_NAME_MAP[first];
+  }
+  // Frame color as secondary fallback
+  const frameMatch = text.match(/Frame colou?r\s+([A-Za-z]+)/i);
+  if (frameMatch) {
+    const colorName = frameMatch[1].toLowerCase();
     if (COLOR_NAME_MAP[colorName]) return COLOR_NAME_MAP[colorName];
   }
   return undefined;
@@ -244,14 +262,16 @@ function mapVariantItem(shopifyProduct, variant) {
   const colorOption = selectedOptions.find(o => o.name === COLOR_OPTION);
   const sizeOption  = selectedOptions.find(o => o.name === SIZE_OPTION);
 
-  // Resolve color: option map → description text → default
-  let colorId = colorOption ? COLOR_MAP[colorOption.value] : undefined;
-  if (colorOption && !colorId) {
-    console.warn(`[listing] No color ID for option "${colorOption.value}". Add to ABOUTYOU_COLOR_MAP.`);
+  // Resolve color: description "Main color" first → Shopify option (via COLOR_MAP) → default
+  // "Main color" in the product description is the most reliable source for eyewear
+  let colorId = extractColorFromDescription(shopifyProduct.descriptionHtml);
+  if (!colorId && colorOption) {
+    colorId = COLOR_MAP[colorOption.value];
+    if (!colorId) {
+      console.warn(`[listing] No color ID for option "${colorOption.value}". Add to ABOUTYOU_COLOR_MAP.`);
+    }
   }
-  if (!colorId) {
-    colorId = extractColorFromDescription(shopifyProduct.descriptionHtml) || DEFAULT_COLOR_ID;
-  }
+  if (!colorId) colorId = DEFAULT_COLOR_ID;
 
   // Resolve size: option map → default (one size for single-variant products)
   let sizeId = sizeOption ? SIZE_MAP[sizeOption.value] : undefined;
