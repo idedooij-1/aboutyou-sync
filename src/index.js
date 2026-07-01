@@ -422,24 +422,30 @@ app.post('/sync/list-missing', authGuard, async (req, res) => {
       });
     }
 
-    // 6. List on AY
-    console.log(`[list-missing] Listing ${ayItems.length} item(s) on AY...`);
-    const batchResults = await listProducts(ayItems);
-
-    // 7. Update known-skus.json
-    try {
-      const knownSkus = new Set(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
-      ayItems.forEach(i => knownSkus.add(i.sku));
-      fs.writeFileSync(STATE_FILE, JSON.stringify([...knownSkus]));
-    } catch { fs.writeFileSync(STATE_FILE, JSON.stringify(ayItems.map(i => i.sku))); }
-
+    // 6. Respond immediately, then list in background
     res.json({
-      listed: ayItems.map(i => ({ sku: i.sku, name: i.name, brand: i.brand })),
+      message: 'Listing started in background',
       listedCount: ayItems.length,
+      skus: ayItems.map(i => i.sku),
       skipped: skipped.map(p => ({ title: p.title, vendor: p.vendor })),
       skippedCount: skipped.length,
-      batchResults,
     });
+
+    // Background: list on AY + update known-skus.json
+    (async () => {
+      try {
+        const batchResults = await listProducts(ayItems);
+        console.log(`[list-missing] Batch submitted:`, JSON.stringify(batchResults));
+        try {
+          const knownSkus = new Set(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
+          ayItems.forEach(i => knownSkus.add(i.sku));
+          fs.writeFileSync(STATE_FILE, JSON.stringify([...knownSkus]));
+        } catch { fs.writeFileSync(STATE_FILE, JSON.stringify(ayItems.map(i => i.sku))); }
+        console.log(`[list-missing] Done. Listed ${ayItems.length} item(s).`);
+      } catch (err) {
+        console.error('[list-missing] background error:', err.response?.data || err.message);
+      }
+    })();
   } catch (err) {
     console.error('[list-missing] error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
