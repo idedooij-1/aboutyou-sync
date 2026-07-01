@@ -58,6 +58,20 @@ const BUILTIN_BRAND_MAP = {
   'Tods':             3141709,
   "Tod's":            3141709,
   'Superdry':         4391023,
+  // Newly activated brands (2026-07-01)
+  'Converse':         174260,
+  'Esprit':           174383,
+  'Reebok':           174484,
+  "O'Neill":          174513,
+  'Omega':            176740,
+  'Hugo':             177010,
+  'Bally':            178454,
+  'Gant':             178869,
+  'Swarovski':        184312,
+  'Michael Kors':     184837,
+  'Hackett London':   304869,
+  'Hackett':          304869,
+  'Adidas Sport':     1107127,
 };
 
 const BRAND_MAP = (() => {
