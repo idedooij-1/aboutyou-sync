@@ -72,6 +72,14 @@ const BUILTIN_BRAND_MAP = {
   'Hackett London':   304869,
   'Hackett':          304869,
   'Adidas Sport':     1107127,
+  // Newly activated brands (2026-07-07)
+  'Calvin Klein':     174588,
+  'Scotch & Soda':    174605,
+  'Carrera':          174640,
+  'David Beckham':    181823,
+  'Porsche Design':   281415,
+  'Ana Hickmann':     4398548,
+  'Serengeti':        4398549,
 };
 
 const BRAND_MAP = (() => {
