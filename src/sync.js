@@ -20,7 +20,7 @@ function saveKnownSkus(skus) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify([...skus]));
 }
-const { updateStock, updatePrices, listProducts, getBrands } = require('./aboutyou');
+const { updateStock, updatePrices, listProducts, getBrands, getAllProducts, updateProductStatus } = require('./aboutyou');
 const { BRAND_MAP } = require('./listing');
 
 // Country codes to sync prices for (e.g. "DE,AT,NL,BE")
@@ -255,4 +255,24 @@ async function checkNewBrands() {
   return newMatches;
 }
 
-module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands };
+// Submit all draft products on AboutYou for approval (status: draft → published,
+// which AboutYou then shows as "pending approval" until reviewed).
+async function submitDraftsForApproval() {
+  console.log('[sync] Checking for draft products to submit for approval...');
+  const ayProducts = await getAllProducts();
+  const drafts = ayProducts.filter(p => p.status === 'draft');
+
+  // Deduplicate by style_key
+  const styleKeys = [...new Set(drafts.map(p => p.style_key).filter(Boolean))];
+  if (styleKeys.length === 0) {
+    console.log('[sync] No draft products found.');
+    return { submitted: 0, styleKeys: [] };
+  }
+
+  const items = styleKeys.map(style_key => ({ style_key, status: 'published' }));
+  const result = await updateProductStatus(items);
+  console.log(`[sync] Submitted ${styleKeys.length} draft product(s) for approval.`);
+  return { submitted: styleKeys.length, styleKeys, result };
+}
+
+module.exports = { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands, submitDraftsForApproval };

@@ -3,9 +3,9 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const cron = require('node-cron');
-const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands } = require('./sync');
+const { syncStock, syncPrices, handleInventoryUpdate, handleProductUpdate, checkAndListNewProducts, listAllProducts, checkNewBrands, submitDraftsForApproval } = require('./sync');
 const { getCollectionVariants, getProductsByIds } = require('./shopify');
-const { getCategories, getCategoryAttributeGroups, getBrands, getRejectedProducts, getAllProducts, deleteProduct, updateProductStatus } = require('./aboutyou');
+const { getCategories, getCategoryAttributeGroups, getBrands, getRejectedProducts, getAllProducts, deleteProduct } = require('./aboutyou');
 const { mountAuthRoutes } = require('./auth');
 
 const app = express();
@@ -531,14 +531,9 @@ app.post('/sync/relist-products', authGuard, async (req, res) => {
 // Submit all draft products for approval (status → published)
 app.post('/sync/submit-for-approval', authGuard, async (req, res) => {
   try {
-    const ayProducts = await getAllProducts();
-    const drafts = ayProducts.filter(p => p.status === 'draft');
-    // Deduplicate by style_key
-    const styleKeys = [...new Set(drafts.map(p => p.style_key).filter(Boolean))];
-    if (styleKeys.length === 0) return res.json({ message: 'No draft products found', submitted: 0 });
-    const items = styleKeys.map(style_key => ({ style_key, status: 'published' }));
-    const result = await updateProductStatus(items);
-    res.json({ submitted: styleKeys.length, styleKeys, result });
+    const result = await submitDraftsForApproval();
+    if (result.submitted === 0) return res.json({ message: 'No draft products found', submitted: 0 });
+    res.json(result);
   } catch (err) {
     console.error('[submit-for-approval] error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
@@ -660,6 +655,16 @@ cron.schedule('0 * * * *', async () => {
     await syncPrices();
   } catch (err) {
     console.error('[cron] price sync error:', err.message);
+  }
+});
+
+// Auto-submit draft products for approval every hour (status: draft → pending approval)
+cron.schedule('0 * * * *', async () => {
+  console.log('[cron] Running scheduled draft submission');
+  try {
+    await submitDraftsForApproval();
+  } catch (err) {
+    console.error('[cron] draft submission error:', err.message);
   }
 });
 
