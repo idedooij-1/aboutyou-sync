@@ -32,7 +32,8 @@ async function syncStock() {
 
   const items = variants.map(v => ({
     sku: v.sku,
-    quantity: Math.max(0, v.inventoryQuantity || 0),
+    // shippableQuantity excludes locations with shipsInventory: false (e.g. BB warehouse)
+    quantity: Math.max(0, v.shippableQuantity ?? v.inventoryQuantity ?? 0),
     valid_at: v.updatedAt,
   }));
 
