@@ -86,6 +86,14 @@ async function getCollectionVariants(handle) {
                   compareAtPrice
                   inventoryQuantity
                   updatedAt
+                  inventoryItem {
+                    inventoryLevels(first: 10) {
+                      nodes {
+                        location { shipsInventory }
+                        quantities(names: ["available"]) { name quantity }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -106,7 +114,17 @@ async function getCollectionVariants(handle) {
     for (const product of collection.products.nodes) {
       for (const variant of product.variants.nodes) {
         if (variant.sku && variant.sku.trim() !== '') {
-          variants.push({ ...variant, product: { id: product.id, title: product.title, vendor: product.vendor } });
+          // Only count stock at locations that actually ship inventory —
+          // excludes non-fulfilling locations (e.g. BB warehouse) from the AboutYou stock feed
+          const levels = (variant.inventoryItem && variant.inventoryItem.inventoryLevels && variant.inventoryItem.inventoryLevels.nodes) || [];
+          const shippableQuantity = levels
+            .filter(l => l.location && l.location.shipsInventory)
+            .reduce((sum, l) => {
+              const available = (l.quantities || []).find(q => q.name === 'available');
+              return sum + (available ? available.quantity : 0);
+            }, 0);
+
+          variants.push({ ...variant, shippableQuantity, product: { id: product.id, title: product.title, vendor: product.vendor } });
         }
       }
     }
