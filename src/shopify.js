@@ -72,7 +72,7 @@ async function getCollectionVariants(handle) {
       query getCollectionVariants($id: ID!, $cursor: String) {
         collection(id: $id) {
           title
-          products(first: 250, after: $cursor) {
+          products(first: 50, after: $cursor) {
             pageInfo { hasNextPage endCursor }
             nodes {
               id
