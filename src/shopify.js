@@ -72,13 +72,13 @@ async function getCollectionVariants(handle) {
       query getCollectionVariants($id: ID!, $cursor: String) {
         collection(id: $id) {
           title
-          products(first: 50, after: $cursor) {
+          products(first: 15, after: $cursor) {
             pageInfo { hasNextPage endCursor }
             nodes {
               id
               title
               vendor
-              variants(first: 100) {
+              variants(first: 40) {
                 nodes {
                   id
                   sku
@@ -87,7 +87,7 @@ async function getCollectionVariants(handle) {
                   inventoryQuantity
                   updatedAt
                   inventoryItem {
-                    inventoryLevels(first: 10) {
+                    inventoryLevels(first: 5) {
                       nodes {
                         location { shipsInventory }
                         quantities(names: ["available"]) { name quantity }
