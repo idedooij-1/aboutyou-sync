@@ -137,6 +137,61 @@ async function getCollectionVariants(handle) {
   return variants;
 }
 
+// Fetch specific variants by SKU (batched to stay under Shopify's GraphQL query cost limit),
+// with shippable stock computed per variant (locations with shipsInventory: false excluded).
+// Used to sync stock for exactly the SKUs listed on AboutYou, independent of any Shopify
+// collection membership -- a product can be listed on AboutYou but later removed, unpublished,
+// or have its SKU changed on Shopify, and callers need to know it wasn't found so they can
+// zero out its AboutYou stock.
+async function getVariantsBySkus(skus) {
+    const BATCH_SIZE = 40;
+    const bySku = {};
+
+    for (let i = 0; i < skus.length; i += BATCH_SIZE) {
+          const batch = skus.slice(i, i + BATCH_SIZE);
+          const searchQuery = batch.map(sku => `sku:${JSON.stringify(sku)}`).join(' OR ');
+
+          const query = `
+                query getVariantsBySku($query: String!) {
+                        productVariants(first: ${BATCH_SIZE}, query: $query) {
+                                  nodes {
+                                              sku
+                                                          inventoryQuantity
+                                                                      updatedAt
+                                                                                  inventoryItem {
+                                                                                                inventoryLevels(first: 5) {
+                                                                                                                nodes {
+                                                                                                                                  location { shipsInventory }
+                                                                                                                                                    quantities(names: ["available"]) { name quantity }
+                                                                                                                                                                    }
+                                                                                                                                                                                  }
+                                                                                                                                                                                              }
+                                                                                                                                                                                                        }
+                                                                                                                                                                                                                }
+                                                                                                                                                                                                                      }
+                                                                                                                                                                                                                          `;
+
+          const res = await client.post('/graphql.json', { query, variables: { query: searchQuery } });
+          if (res.data.errors) throw new Error(res.data.errors.map(e => e.message).join('; '));
+
+          for (const variant of res.data.data.productVariants.nodes) {
+                  if (!variant.sku || variant.sku.trim() === '') continue;
+
+                  const levels = (variant.inventoryItem && variant.inventoryItem.inventoryLevels && variant.inventoryItem.inventoryLevels.nodes) || [];
+                  const shippableQuantity = levels
+                    .filter(l => l.location && l.location.shipsInventory)
+                    .reduce((sum, l) => {
+                                const available = (l.quantities || []).find(q => q.name === 'available');
+                                return sum + (available ? available.quantity : 0);
+                    }, 0);
+
+                  bySku[variant.sku] = { ...variant, shippableQuantity };
+          }
+    }
+
+    return bySku;
+}
+
 // Fetch full product data for listing on AboutYou (title, description, images, variants with options/barcode)
 async function getProductsForListing(handle) {
   const collectionId = await getCollectionId(handle);
@@ -246,4 +301,4 @@ async function graphql(query, variables = {}) {
   return res.data.data;
 }
 
-module.exports = { getAllVariants, getCollectionVariants, getProductsForListing, getProductsByIds, graphql };
+module.exports = { getAllVariants, getCollectionVariants, getVariantsBySkus, getProductsForListing, getProductsByIds, graphql };
