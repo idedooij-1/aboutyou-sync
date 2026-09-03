@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { getCollectionVariants, getProductsForListing, graphql } = require('./shopify');
+const { getCollectionVariants, getVariantsBySkus, getProductsForListing, graphql } = require('./shopify');
 const { mapProducts } = require('./listing');
 const { getAyImageUrls } = require('./images');
 
@@ -27,24 +27,38 @@ const { BRAND_MAP } = require('./listing');
 const COUNTRY_CODES = (process.env.ABOUTYOU_COUNTRY_CODES || 'DE').split(',').map(c => c.trim());
 
 async function syncStock() {
-  console.log('[sync] Starting stock sync...');
-  const variants = await getCollectionVariants(COLLECTION_HANDLE);
+    console.log('[sync] Starting stock sync...');
 
-  const items = variants.map(v => ({
-    sku: v.sku,
-    // shippableQuantity excludes locations with shipsInventory: false (e.g. BB warehouse)
-    quantity: Math.max(0, v.shippableQuantity ?? v.inventoryQuantity ?? 0),
-    valid_at: v.updatedAt,
-  }));
+    // Stock sync targets exactly what's listed on AboutYou, not Shopify collection membership --
+    // a product can be listed on AboutYou but later get removed/unpublished on Shopify (or drop out
+    // of whatever collection used to gate this), and its AboutYou stock still needs to be corrected.
+    const ayProducts = await getAllProducts();
+    const skus = [...new Set(ayProducts.map(p => p.sku).filter(Boolean))];
 
-  if (items.length === 0) {
-    console.log('[sync] No variants with SKUs found.');
-    return;
-  }
+    if (skus.length === 0) {
+          console.log('[sync] No products listed on AboutYou -- nothing to sync.');
+          return;
+    }
 
-  console.log(`[sync] Syncing stock for ${items.length} variants...`);
-  await updateStock(items);
-  console.log('[sync] Stock sync complete.');
+    const shopifyBySku = await getVariantsBySkus(skus);
+    const now = new Date().toISOString();
+    let notFoundCount = 0;
+
+    const items = skus.map(sku => {
+          const variant = shopifyBySku[sku];
+          if (!variant) notFoundCount++;
+          // Not found on Shopify (deleted, unpublished, SKU changed, out of stock everywhere) -> 0 on AboutYou.
+          // shippableQuantity excludes locations with shipsInventory: false (e.g. BB warehouse).
+          const quantity = variant ? Math.max(0, variant.shippableQuantity ?? variant.inventoryQuantity ?? 0) : 0;
+          // Use the current time rather than Shopify's variant.updatedAt: a variant whose record hasn't
+          // been touched recently (even though its stock did change) has an old updatedAt, and AboutYou
+          // silently discards a stock update whose valid_at is older than what it already has on file.
+          return { sku, quantity, valid_at: now };
+    });
+
+    console.log(`[sync] Syncing stock for ${items.length} AboutYou-listed SKUs (${notFoundCount} not found on Shopify -> set to 0)...`);
+    await updateStock(items);
+    console.log('[sync] Stock sync complete.');
 }
 
 async function syncPrices() {
